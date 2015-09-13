@@ -83,6 +83,21 @@ rabbit_opts = [
                help='How long to wait before considering a reconnect '
                     'attempt to have failed. This value should not be '
                     'longer than rpc_response_timeout.'),
+    cfg.StrOpt('kombu_transport',
+               default='pyamqp',
+               help='Default transport for kombu'),
+    cfg.BoolOpt('kombu_keepalive_enable',
+                default=True,
+                help='enable keeplive for kombu transport.'),
+    cfg.IntOpt('kombu_keepalive_idle',
+               default=30,
+               help='keeplive_idle for kombu transport.'),
+    cfg.IntOpt('kombu_keepalive_interval',
+               default=3,
+               help='keeplive_interval for kombu transport.'),
+    cfg.IntOpt('kombu_keepalive_count',
+               default=3,
+               help='keeplive_count for kombu transport.'),
     cfg.StrOpt('rabbit_host',
                default='localhost',
                deprecated_group='DEFAULT',
@@ -388,12 +403,18 @@ class Connection(object):
         self.amqp_auto_delete = driver_conf.amqp_auto_delete
         self.rabbit_use_ssl = driver_conf.rabbit_use_ssl
         self.kombu_reconnect_timeout = driver_conf.kombu_reconnect_timeout
+        self.kombu_keepalive_enable = driver_conf.kombu_keepalive_enable
 
         if self.rabbit_use_ssl:
             self.kombu_ssl_version = driver_conf.kombu_ssl_version
             self.kombu_ssl_keyfile = driver_conf.kombu_ssl_keyfile
             self.kombu_ssl_certfile = driver_conf.kombu_ssl_certfile
             self.kombu_ssl_ca_certs = driver_conf.kombu_ssl_ca_certs
+
+        if self.kombu_keepalive_enable:
+            self.kombu_keepalive_idle = driver_conf.kombu_keepalive_idle
+            self.kombu_keepalive_interval = driver_conf.kombu_keepalive_interval
+            self.kombu_keepalive_count = driver_conf.kombu_keepalive_count
 
         # Try forever?
         if self.max_retries <= 0:
@@ -460,17 +481,27 @@ class Connection(object):
         else:
             self._connection_lock = DummyConnectionLock()
 
-        self.connection = kombu.connection.Connection(
-            self._url, ssl=self._fetch_ssl_params(),
-            login_method=self.login_method,
-            failover_strategy="shuffle",
-            heartbeat=self.heartbeat_timeout_threshold,
-            transport_options={
-                'confirm_publish': True,
-                'on_blocked': self._on_connection_blocked,
-                'on_unblocked': self._on_connection_unblocked,
-            },
-        )
+        conn_kwargs = {
+                'ssl': self._fetch_ssl_params(),
+                'login_method': self.login_method,
+                'failover_strategy': 'shuffle',
+                'heartbeat': self.heartbeat_timeout_threshold,
+                'transport_options': {
+                    'confirm_publish': True,
+                    'on_blocked': self._on_connection_blocked,
+                    'on_unblocked': self._on_connection_unblocked,
+                }
+        }
+
+        if self.kombu_keepalive_enable:
+            conn_kwargs.update({'transport': 'pyamqp'})
+            conn_kwargs['transport_options'].update({
+                'keepalive_idle': self.kombu_keepalive_idle,
+                'keepalive_interval': self.kombu_keepalive_interval,
+                'keepalive_count': self.kombu_keepalive_count,
+                })
+
+        self.connection = kombu.connection.Connection(self._url, **conn_kwargs)
 
         LOG.info(_LI('Connecting to AMQP server on %(hostname)s:%(port)s'),
                  self.connection.info())
